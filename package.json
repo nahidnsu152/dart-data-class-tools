@@ -2,14 +2,14 @@
 	"name": "dart-data-class-tools",
 	"displayName": "Dart Data Class Generator",
 	"description": "Create dart data classes easily, fast and without writing boilerplate or running code generation.",
-	"publisher": "ricardo-emerson",
-	"version": "0.8.1",
+	"publisher": "nazmul-hasan",
+	"version": "0.1.0",
 	"engines": {
-		"vscode": "^1.65.0"
+		"vscode": "^1.99.2"
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/ricardoemerson/dart-data-class-tools"
+		"url": "https://github.com/nahidnsu152/dart-data-class-tools"
 	},
 	"icon": "assets/icon.png",
 	"keywords": [
@@ -21,7 +21,7 @@
 		"value getter"
 	],
 	"author": {
-		"name": "ricardoemerson"
+		"name": "nazmulhasan"
 	},
 	"categories": [
 		"Programming Languages",

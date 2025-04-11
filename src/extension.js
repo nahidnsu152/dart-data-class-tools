@@ -1997,10 +1997,65 @@ class JsonReader {
         }
     }
 
+    // /**
+    //  * @param {vscode.Progress} progress
+    //  * @param {boolean} separate
+    //  */
+    // async commitJson(progress, separate) {
+    //     let path = getCurrentPath();
+    //     let fileContent = '';
+
+    //     const length = this.files.length;
+    //     for (let i = 0; i < length; i++) {
+    //         const file = this.files[i];
+    //         const isLast = i == length - 1;
+    //         const generator = new DataClassGenerator(file.content, [file.clazz], true);
+
+    //         if (separate)
+    //             this.addGeneratedFilesAsImport(generator)
+
+    //         const imports = `${generator.imports.formatted}\n`;
+
+    //         progress.report({
+    //             increment: ((1 / length) * 100),
+    //             message: `Creating file ${file.name}...`
+    //         });
+
+    //         if (separate) {
+    //             const clazz = generator.clazzes[0];
+
+    //             const replacement = imports + clazz.generateClassReplacement();
+    //             if (i > 0) {
+    //                 await writeFile(replacement, file.name, false, path);
+    //             } else {
+    //                 await getEditor().edit(editor => {
+    //                     editorReplace(editor, 0, null, replacement);
+    //                 });
+    //             }
+
+    //             await new Promise(resolve => setTimeout(() => resolve(), 120));
+    //         } else {
+    //             for (let clazz of generator.clazzes) {
+    //                 fileContent += clazz.generateClassReplacement() + '\n\n';
+    //             }
+
+    //             if (isLast) {
+    //                 fileContent = removeEnd(fileContent, '\n\n');
+    //                 await getEditor().edit(editor => {
+    //                     editorReplace(editor, 0, null, fileContent);
+    //                     editorInsert(editor, 0, imports);
+    //                 });
+    //             }
+    //         }
+    //     }
+    // }
+
+
     /**
      * @param {vscode.Progress} progress
      * @param {boolean} separate
      */
+
     async commitJson(progress, separate) {
         let path = getCurrentPath();
         let fileContent = '';
@@ -2011,8 +2066,9 @@ class JsonReader {
             const isLast = i == length - 1;
             const generator = new DataClassGenerator(file.content, [file.clazz], true);
 
-            if (separate)
-                this.addGeneratedFilesAsImport(generator)
+            if (separate) {
+                this.addGeneratedFilesAsImport(generator);
+            }
 
             const imports = `${generator.imports.formatted}\n`;
 
@@ -2021,32 +2077,38 @@ class JsonReader {
                 message: `Creating file ${file.name}...`
             });
 
-            if (separate) {
-                const clazz = generator.clazzes[0];
-
-                const replacement = imports + clazz.generateClassReplacement();
-                if (i > 0) {
-                    await writeFile(replacement, file.name, false, path);
+            try {
+                if (separate) {
+                    const clazz = generator.clazzes[0];
+                    const replacement = imports + clazz.generateClassReplacement();
+                    if (i > 0) {
+                        await writeFile(replacement, file.name, false, path);
+                    } else {
+                        await getEditor().edit(editor => {
+                            editorReplace(editor, 0, null, replacement);
+                        });
+                    }
                 } else {
-                    await getEditor().edit(editor => {
-                        editorReplace(editor, 0, null, replacement);
-                    });
-                }
+                    for (let clazz of generator.clazzes) {
+                        fileContent += clazz.generateClassReplacement() + '\n\n';
+                    }
 
-                await new Promise(resolve => setTimeout(() => resolve(), 120));
-            } else {
-                for (let clazz of generator.clazzes) {
-                    fileContent += clazz.generateClassReplacement() + '\n\n';
+                    if (isLast) {
+                        fileContent = removeEnd(fileContent, '\n\n');
+                        await getEditor().edit(editor => {
+                            editorReplace(editor, 0, null, fileContent);
+                            editorInsert(editor, 0, imports);
+                        });
+                    }
                 }
-
-                if (isLast) {
-                    fileContent = removeEnd(fileContent, '\n\n');
-                    await getEditor().edit(editor => {
-                        editorReplace(editor, 0, null, fileContent);
-                        editorInsert(editor, 0, imports);
-                    });
-                }
+            } catch (error) {
+                console.error(`Error processing file ${file.name}:`, error);
+                vscode.window.showErrorMessage(`Error processing ${file.name}: ${error.message}`);
+                continue; // Continue with next file
             }
+
+            // Small delay to prevent overwhelming the UI
+            await new Promise(resolve => setTimeout(() => resolve(), 120));
         }
     }
 }
@@ -2310,41 +2372,86 @@ function createFileName(name) {
     return r;
 }
 
-function getCurrentPath() {
-    let path = vscode.window.activeTextEditor.document.fileName;
-    let dirs = path.split("\\");
-    path = '';
-    for (let i = 0; i < dirs.length; i++) {
-        let dir = dirs[i];
-        if (i < dirs.length - 1) {
-            path += dir + "\\";
+// function getCurrentPath() {
+//     let path = vscode.window.activeTextEditor.document.fileName;
+//     let dirs = path.split("\\");
+//     path = '';
+//     for (let i = 0; i < dirs.length; i++) {
+//         let dir = dirs[i];
+//         if (i < dirs.length - 1) {
+//             path += dir + "\\";
+//         }
+//     }
+
+//     return path;
+// }
+
+// /**
+//  * @param {string} content
+//  * @param {string} name
+//  */
+// async function writeFile(content, name, open = true, path = getCurrentPath()) {
+//     let p = path + name + '.dart';
+//     if (fs.existsSync(p)) {
+//         let i = 0;
+//         do {
+//             p = path + name + '_' + ++i + '.dart'
+//         } while (fs.existsSync(p));
+//     }
+
+//     fs.writeFileSync(p, content, 'utf8');
+//     if (open) {
+//         let openPath = vscode.Uri.parse("file:///" + p);
+//         let doc = await vscode.workspace.openTextDocument(openPath);
+//         await vscode.window.showTextDocument(doc);
+//     }
+//     return;
+// }
+
+    function getCurrentPath() {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            console.error('No active editor found');
+            return '';
+        }
+        const filePath = editor.document.fileName;
+        const path = require('path');
+        return path.dirname(filePath); // Returns the directory of the current file
+    }
+
+    /**
+     * @param {string} content
+     * @param {string} name
+     */
+    async function writeFile(content, name, open = true, dirPath = getCurrentPath()) {
+        const path = require('path');
+        let filePath = path.join(dirPath, `${name}.dart`);
+        
+        // Check for file existence and append suffix if needed
+        let i = 0;
+        while (fs.existsSync(filePath)) {
+            i++;
+            filePath = path.join(dirPath, `${name}_${i}.dart`);
+        }
+
+        try {
+            // Ensure directory exists
+            await fs.promises.mkdir(dirPath, { recursive: true });
+            // Write file
+            await fs.promises.writeFile(filePath, content, 'utf8');
+            console.log(`Successfully wrote file: ${filePath}`);
+            
+            if (open) {
+                const openPath = vscode.Uri.file(filePath);
+                const doc = await vscode.workspace.openTextDocument(openPath);
+                await vscode.window.showTextDocument(doc);
+            }
+        } catch (error) {
+            console.error(`Failed to write file ${filePath}:`, error);
+            vscode.window.showErrorMessage(`Failed to create file ${filePath}: ${error.message}`);
+            throw error; // Rethrow to ensure caller knows about the failure
         }
     }
-
-    return path;
-}
-
-/**
- * @param {string} content
- * @param {string} name
- */
-async function writeFile(content, name, open = true, path = getCurrentPath()) {
-    let p = path + name + '.dart';
-    if (fs.existsSync(p)) {
-        let i = 0;
-        do {
-            p = path + name + '_' + ++i + '.dart'
-        } while (fs.existsSync(p));
-    }
-
-    fs.writeFileSync(p, content, 'utf8');
-    if (open) {
-        let openPath = vscode.Uri.parse("file:///" + p);
-        let doc = await vscode.workspace.openTextDocument(openPath);
-        await vscode.window.showTextDocument(doc);
-    }
-    return;
-}
 
 /**
  * @param {string} source
