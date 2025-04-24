@@ -1130,6 +1130,7 @@ class DataClassGenerator {
     }
 
     // *** UPDATE 3: Modified fromMap to include null check for nested objects ***
+
     /**
  * @param {DartClass} clazz
  */
@@ -1173,16 +1174,16 @@ insertFromMap(clazz) {
             method += `${p.type}.from(`;
             if (p.isPrimitive) {
                 if (p.isDouble) {
-                    method += `${clazz.name}.parseDouble(${value})`;
+                    method += `${value}?.map((x) => ${clazz.name}.parseDouble(x)) ?? const []`;
                 } else if (p.isInt) {
-                    method += `${clazz.name}.parseInt(${value})`;
+                    method += `${value}?.map((x) => ${clazz.name}.parseInt(x)) ?? const []`;
                 } else if (p.type === 'String') {
-                    method += `${clazz.name}.parseString(${value})`;
+                    method += `${value}?.map((x) => ${clazz.name}.parseString(x)) ?? const []`;
                 } else {
-                    method += `${value}`;
+                    method += `${value} ?? const []`;
                 }
             } else {
-                method += `${value}?.map((x) => x == null ? ${p.collectionType.type}.init() : ${customTypeMapping(p, 'x')}).toList()`; // Fixed brackets and null check
+                method += `${value}?.map((x) => ${customTypeMapping(p, 'x')}) ?? const []`;
             }
             method += ')';
         } else if (p.isPrimitive) {
@@ -1196,7 +1197,7 @@ insertFromMap(clazz) {
                 method += `${value}`;
             }
         } else {
-            method += `${value} == null ? ${p.type}.init() : ${customTypeMapping(p)}`; // Single null check
+            method += `${value} == null ? ${p.type}.init() : ${customTypeMapping(p)}`; // Single null check for non-collection objects
         }
 
         if (addNullCheck) {
