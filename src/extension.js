@@ -764,7 +764,7 @@ class DataClassGenerator {
 
             if (!clazz.isWidget) {
                 // *** UPDATE 2: Added custom parse methods and init factory ***
-                this.insertParseMethods(clazz);
+                // this.insertParseMethods(clazz);
                 this.insertInitFactory(clazz);
 
                 if (!clazz.isAbstract) {
@@ -1409,39 +1409,38 @@ insertFromMap(clazz) {
 
     // *** UPDATE 4: Added custom parse methods ***
 
+    //     /**
+//  * @param {DartClass} clazz
+//  */
+// insertParseMethods(clazz) {
+//     const parseDoubleMethod = `
+//   static double parseDouble(dynamic value) {
+//     if (value == null) return 0.0;
+//     if (value is double) return value;
+//     if (value is int) return value.toDouble();
+//     if (value is String) return double.tryParse(value) ?? 0.0;
+//     return 0.0;
+//   }`;
 
-    /**
- * @param {DartClass} clazz
- */
-insertParseMethods(clazz) {
-    const parseDoubleMethod = `
-  static double parseDouble(dynamic value) {
-    if (value == null) return 0.0;
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    if (value is String) return double.tryParse(value) ?? 0.0;
-    return 0.0;
-  }`;
+//     const parseIntMethod = `
+//   static int parseInt(dynamic value) {
+//     if (value == null) return 0;
+//     if (value is int) return value;
+//     if (value is String) return int.tryParse(value) ?? 0;
+//     return 0;
+//   }`;
 
-    const parseIntMethod = `
-  static int parseInt(dynamic value) {
-    if (value == null) return 0;
-    if (value is int) return value;
-    if (value is String) return int.tryParse(value) ?? 0;
-    return 0;
-  }`;
+//     const parseStringMethod = `
+//   static String parseString(dynamic value) {
+//     if (value == null) return '';
+//     return value.toString();
+//   }`;
 
-    const parseStringMethod = `
-  static String parseString(dynamic value) {
-    if (value == null) return '';
-    return value.toString();
-  }`;
-
-    // Use appendOrReplace to avoid duplicates
-    this.appendOrReplace('parseDouble', parseDoubleMethod, `static double parseDouble(dynamic value)`, clazz);
-    this.appendOrReplace('parseInt', parseIntMethod, `static int parseInt(dynamic value)`, clazz);
-    this.appendOrReplace('parseString', parseStringMethod, `static String parseString(dynamic value)`, clazz);
-}
+//     // Use appendOrReplace to avoid duplicates
+//     this.appendOrReplace('parseDouble', parseDoubleMethod, `static double parseDouble(dynamic value)`, clazz);
+//     this.appendOrReplace('parseInt', parseIntMethod, `static int parseInt(dynamic value)`, clazz);
+//     this.appendOrReplace('parseString', parseStringMethod, `static String parseString(dynamic value)`, clazz);
+// }
 
 /**
  * @param {DartClass} clazz

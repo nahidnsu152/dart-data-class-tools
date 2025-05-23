@@ -5,7 +5,7 @@
 	"publisher": "nazmul-hasan",
 	"version": "0.2.0",
 	"engines": {
-		"vscode": "^1.99.2"
+		"vscode": "^1.100.2"
 	},
 	"repository": {
 		"type": "git",
