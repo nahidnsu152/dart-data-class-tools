@@ -1131,7 +1131,7 @@ class DataClassGenerator {
 
     // *** UPDATE 3: Modified fromMap to include null check for nested objects ***
 
-    /**
+/**
  * @param {DartClass} clazz
  */
 insertFromMap(clazz) {
@@ -1146,11 +1146,11 @@ insertFromMap(clazz) {
 
         switch (prop.type) {
             case 'DateTime':
-                return `DateTime.fromMillisecondsSinceEpoch(${clazz.name}.parseInt(${value}))`;
+                return `DateTime.fromMillisecondsSinceEpoch(ParsingUtils.parseInt(${value}))`;
             case 'Color':
-                return `Color(${clazz.name}.parseInt(${value}))`;
+                return `Color(ParsingUtils.parseInt(${value}))`;
             case 'IconData':
-                return `IconData(${clazz.name}.parseInt(${value}), fontFamily: 'MaterialIcons')`;
+                return `IconData(ParsingUtils.parseInt(${value}), fontFamily: 'MaterialIcons')`;
             default:
                 return `${prop.type}.fromMap(${value})`;
         }
@@ -1169,16 +1169,18 @@ insertFromMap(clazz) {
         }
 
         if (p.isEnum) {
-            method += `${p.rawType}.values[${clazz.name}.parseInt(${value})]`;
+            method += `${p.rawType}.values[ParsingUtils.parseInt(${value})]`;
         } else if (p.isCollection) {
             method += `${p.type}.from(`;
             if (p.isPrimitive) {
                 if (p.isDouble) {
-                    method += `${value}?.map((x) => ${clazz.name}.parseDouble(x)) ?? const []`;
+                    method += `${value}?.map((x) => ParsingUtils.parseDouble(x)) ?? const []`;
                 } else if (p.isInt) {
-                    method += `${value}?.map((x) => ${clazz.name}.parseInt(x)) ?? const []`;
+                    method += `${value}?.map((x) => ParsingUtils.parseInt(x)) ?? const []`;
                 } else if (p.type === 'String') {
-                    method += `${value}?.map((x) => ${clazz.name}.parseString(x)) ?? const []`;
+                    method += `${value}?.map((x) => ParsingUtils.parseString(x)) ?? const []`;
+                } else if (p.type === 'bool') {
+                    method += `${value}?.map((x) => ParsingUtils.parseBool(x)) ?? const []`;
                 } else {
                     method += `${value} ?? const []`;
                 }
@@ -1188,11 +1190,13 @@ insertFromMap(clazz) {
             method += ')';
         } else if (p.isPrimitive) {
             if (p.isDouble) {
-                method += `${clazz.name}.parseDouble(${value})`;
+                method += `ParsingUtils.parseDouble(${value})`;
             } else if (p.isInt) {
-                method += `${clazz.name}.parseInt(${value})`;
+                method += `ParsingUtils.parseInt(${value})`;
             } else if (p.type === 'String') {
-                method += `${clazz.name}.parseString(${value})`;
+                method += `ParsingUtils.parseString(${value})`;
+            } else if (p.type === 'bool') {
+                method += `ParsingUtils.parseBool(${value})`;
             } else {
                 method += `${value}`;
             }
@@ -1403,77 +1407,8 @@ insertFromMap(clazz) {
         this.appendOrReplace('props', method, 'List<Object> get props', clazz);
     }
 
-//     // *** UPDATE 4: Added custom parse methods ***
-//     /**
-//      * @param {DartClass} clazz
-//      */
-//     insertParseMethods(clazz) {
-//         const parseDoubleMethod = `
-//   static double parseDouble(dynamic value) {
-//     if (value == null) return 0.0;
-//     if (value is double) return value;
-//     if (value is int) return value.toDouble();
-//     if (value is String) return double.tryParse(value) ?? 0.0;
-//     return 0.0;
-//   }`;
+    // *** UPDATE 4: Added custom parse methods ***
 
-//         const parseIntMethod = `
-//   static int parseInt(dynamic value) {
-//     if (value == null) return 0;
-//     if (value is int) return value;
-//     if (value is String) return int.tryParse(value) ?? 0;
-//     return 0;
-//   }`;
-
-//         const parseStringMethod = `
-//   static String parseString(dynamic value) {
-//     if (value == null) return '';
-//     return value.toString();
-//   }`;
-
-//         this.appendOrReplace(parseDoubleMethod, clazz);
-//         this.appendOrReplace(parseIntMethod, clazz);
-//         this.appendOrReplace(parseStringMethod, clazz);
-//     }
-
-//     // *** UPDATE 5: Added init factory with nested class support ***
-//     /**
-//      * @param {DartClass} clazz
-//      */
-//     insertInitFactory(clazz) {
-//         let method = `factory ${clazz.name}.init() => ${clazz.type}(\n`;
-        
-//         for (let prop of clazz.properties) {
-//             let defaultValue;
-//             if (prop.isCollection) {
-//                 defaultValue = prop.isList ? 'const []' : 'const {}';
-//             } else {
-//                 switch (prop.type) {
-//                     case 'int':
-//                     case 'num':
-//                         defaultValue = '0';
-//                         break;
-//                     case 'double':
-//                         defaultValue = '0.0';
-//                         break;
-//                     case 'String':
-//                         defaultValue = '""';
-//                         break;
-//                     case 'bool':
-//                         defaultValue = 'false';
-//                         break;
-//                     default:
-//                         defaultValue = `${prop.type}.init()`; // Use init() for nested classes
-//                 }
-//             }
-            
-//             method += `    ${clazz.hasNamedConstructor ? `${prop.name}: ` : ''}${defaultValue},\n`;
-//         }
-        
-//         method += '  );';
-
-//         this.appendOrReplace(method, clazz);
-//     }
 
     /**
  * @param {DartClass} clazz
