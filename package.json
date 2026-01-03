@@ -1,11 +1,11 @@
 {
-	"name": "dart-data-class-tools",
-	"displayName": "Dart Data Class Generator",
+	"name": "clean-dart-data-class-tools",
+	"displayName": "Dart Data Class Generator Clean Architecture",
 	"description": "Create dart data classes easily, fast and without writing boilerplate or running code generation.",
 	"publisher": "nazmul-hasan",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"engines": {
-		"vscode": "^1.100.2"
+		"vscode": "^1.114.0"
 	},
 	"repository": {
 		"type": "git",

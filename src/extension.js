@@ -716,7 +716,174 @@ class ClassPart {
     }
 }
 
-// *** UPDATE 1: Modified DataClassGenerator with custom parse methods, init factory, and null-checked fromMap ***
+function stripGeneratedSuffix(name) {
+    return removeEnd(removeEnd(name, 'Model'), 'Entity');
+}
+
+function createModelName(name) {
+    return `${stripGeneratedSuffix(name)}Model`;
+}
+
+function createEntityName(name) {
+    return `${stripGeneratedSuffix(name)}Entity`;
+}
+
+function isValueObjectType(type) {
+    return type == 'String' ||
+        type == 'num' ||
+        type == 'int' ||
+        type == 'double' ||
+        type == 'bool' ||
+        type == 'dynamic' ||
+        type == 'DateTime' ||
+        type == 'Color' ||
+        type == 'IconData' ||
+        type.startsWith('Map<');
+}
+
+function toEntityType(rawType) {
+    const field = new ClassField(rawType, 'value');
+    const nullableSuffix = field.isNullable ? '?' : '';
+
+    if (field.isList) {
+        return `List<${toEntityType(field.collectionType.rawType)}>${nullableSuffix}`;
+    }
+
+    if (field.isSet) {
+        return `Set<${toEntityType(field.collectionType.rawType)}>${nullableSuffix}`;
+    }
+
+    if (field.isMap || field.isEnum || isValueObjectType(field.type)) {
+        return rawType;
+    }
+
+    return `${createEntityName(field.type)}${nullableSuffix}`;
+}
+
+function toModelType(rawType) {
+    const field = new ClassField(rawType, 'value');
+    const nullableSuffix = field.isNullable ? '?' : '';
+
+    if (field.isList) {
+        return `List<${toModelType(field.collectionType.rawType)}>${nullableSuffix}`;
+    }
+
+    if (field.isSet) {
+        return `Set<${toModelType(field.collectionType.rawType)}>${nullableSuffix}`;
+    }
+
+    if (field.isMap || field.isEnum || isValueObjectType(field.type)) {
+        return rawType;
+    }
+
+    return `${createModelName(field.type)}${nullableSuffix}`;
+}
+
+function entityMappingForProperty(prop, source = null) {
+    const name = source || prop.name;
+    const item = prop.collectionType;
+
+    if (prop.isEnum || item.isPrimitive || item.isMap || isValueObjectType(item.type)) {
+        return name;
+    }
+
+    if (prop.isList) {
+        const nullSafe = prop.isNullable ? '?' : '';
+        return `${name}${nullSafe}.map((item) => item.toEntity()).toList()`;
+    }
+
+    if (prop.isSet) {
+        const nullSafe = prop.isNullable ? '?' : '';
+        return `${name}${nullSafe}.map((item) => item.toEntity()).toSet()`;
+    }
+
+    return `${name}${prop.isNullable ? '?' : ''}.toEntity()`;
+}
+
+function createEntityClass(clazz) {
+    const entityName = createEntityName(clazz.name);
+    const hasNullableProps = clazz.properties.some((prop) => prop.isNullable);
+    let content = `class ${entityName} extends Equatable {\n`;
+
+    for (const prop of clazz.properties) {
+        content += `  final ${toEntityType(prop.rawType)} ${prop.name};\n`;
+    }
+
+    content += `\n  const ${entityName}({\n`;
+    for (const prop of clazz.properties) {
+        content += `    ${prop.isNullable ? '' : 'required '}this.${prop.name},\n`;
+    }
+    content += '  });\n\n';
+
+    content += `  ${entityName} copyWith({\n`;
+    for (const prop of clazz.properties) {
+        content += `    ${toEntityType(prop.rawType)}? ${prop.name},\n`;
+    }
+    content += '  }) {\n';
+    content += `    return ${entityName}(\n`;
+    for (const prop of clazz.properties) {
+        content += `      ${prop.name}: ${prop.name} ?? this.${prop.name},\n`;
+    }
+    content += '    );\n';
+    content += '  }\n\n';
+
+    content += '  @override\n';
+    content += `  List<Object${hasNullableProps ? '?' : ''}> get props => [${clazz.properties.map((prop) => prop.name).join(', ')}];\n`;
+    content += '}';
+
+    return content;
+}
+
+function createArchitectureClass(sourceClazz, kind = 'model') {
+    const clazz = new DartClass();
+    clazz.startsAtLine = 1;
+    clazz.name = kind == 'entity' ? createEntityName(sourceClazz.name) : createModelName(sourceClazz.name);
+
+    let line = 1;
+    clazz.classContent = `class ${clazz.name} {\n`;
+
+    for (const prop of sourceClazz.properties) {
+        const type = kind == 'entity' ? toEntityType(prop.rawType) : toModelType(prop.rawType);
+        const clone = new ClassField(type, prop.name, ++line, true, false, true);
+        clone.isEnum = prop.isEnum;
+        clazz.properties.push(clone);
+        clazz.classContent += `  final ${type} ${prop.name};\n`;
+    }
+
+    clazz.endsAtLine = ++line;
+    clazz.classContent += '}';
+
+    return clazz;
+}
+
+function formatImportStatements(imports) {
+    const data = new Imports('');
+    data.values = Array.from(new Set(imports)).filter((item) => !isBlank(item));
+    return data.formatted;
+}
+
+function getEntityImports(clazz, separate = false) {
+    const imports = ['import \'package:equatable/equatable.dart\';'];
+
+    if (separate) {
+        const currentEntity = createEntityName(clazz.name);
+
+        for (const prop of clazz.properties) {
+            const item = prop.collectionType;
+            if (item.isPrimitive || item.isMap || item.isEnum || isValueObjectType(item.type)) {
+                continue;
+            }
+
+            const entityType = createEntityName(item.type);
+            if (entityType != currentEntity) {
+                imports.push(`import '${createFileName(entityType)}.dart';`);
+            }
+        }
+    }
+
+    return formatImportStatements(imports);
+}
+
 class DataClassGenerator {
     /**
      * @param {String} text
@@ -763,8 +930,6 @@ class DataClassGenerator {
                 this.insertConstructor(clazz);
 
             if (!clazz.isWidget) {
-                // *** UPDATE 2: Added custom parse methods and init factory ***
-                // this.insertParseMethods(clazz);
                 this.insertInitFactory(clazz);
 
                 if (!clazz.isAbstract) {
@@ -778,12 +943,14 @@ class DataClassGenerator {
                         this.insertToJson(clazz);
                     if (readSetting('fromJson.enabled') && this.isPartSelected('serialization'))
                         this.insertFromJson(clazz);
+                    if (this.fromJSON && this.isPartSelected('serialization'))
+                        this.insertToEntity(clazz);
                 }
 
                 if (readSetting('toString.enabled') && this.isPartSelected('toString'))
                     this.insertToString(clazz);
 
-                if ((clazz.usesEquatable || readSetting('useEquatable')) && this.isPartSelected('useEquatable')) {
+                if ((this.fromJSON || clazz.usesEquatable || readSetting('useEquatable')) && this.isPartSelected('useEquatable')) {
                     this.insertEquatable(clazz);
                 } else {
                     if (readSetting('equality.enabled') && this.isPartSelected('equality'))
@@ -1081,6 +1248,52 @@ class DataClassGenerator {
      * @param {DartClass} clazz
      */
     insertToMap(clazz) {
+        if (this.fromJSON) {
+            let method = 'Map<String, dynamic> toMap() {\n';
+            method += '  return {\n';
+
+            for (const prop of clazz.properties) {
+                method += `    '${prop.key}': `;
+
+                if (prop.isEnum) {
+                    method += `${prop.name}${prop.isNullable ? '?' : ''}.index,\n`;
+                } else if (prop.isList || prop.isSet) {
+                    const item = prop.collectionType;
+                    const nullSafe = prop.isNullable ? '?' : '';
+
+                    if (item.isPrimitive || item.isMap || isValueObjectType(item.type)) {
+                        const suffix = prop.isSet ? `${nullSafe}.toList()` : '';
+                        method += `${prop.name}${suffix},\n`;
+                    } else {
+                        const collectionSuffix = prop.isSet ? `${nullSafe}.toList()` : '';
+                        method += `${prop.name}${nullSafe}.map((item) => item.toMap()).toList()${collectionSuffix},\n`;
+                    }
+                } else if (prop.isMap) {
+                    method += `${prop.name},\n`;
+                } else {
+                    switch (prop.type) {
+                        case 'DateTime':
+                            method += `${prop.name}${prop.isNullable ? '?' : ''}.millisecondsSinceEpoch,\n`;
+                            break;
+                        case 'Color':
+                            method += `${prop.name}${prop.isNullable ? '?' : ''}.value,\n`;
+                            break;
+                        case 'IconData':
+                            method += `${prop.name}${prop.isNullable ? '?' : ''}.codePoint,\n`;
+                            break;
+                        default:
+                            method += `${prop.isPrimitive ? prop.name : `${prop.name}${prop.isNullable ? '?' : ''}.toMap()`},\n`;
+                    }
+                }
+            }
+
+            method += '  };\n';
+            method += '}';
+
+            this.appendOrReplace('toMap', method, 'Map<String, dynamic> toMap()', clazz);
+            return;
+        }
+
         let props = clazz.properties;
         /**
          * @param {ClassField} prop
@@ -1129,12 +1342,109 @@ class DataClassGenerator {
         this.appendOrReplace('toMap', method, 'Map<String, dynamic> toMap()', clazz);
     }
 
-    // *** UPDATE 3: Modified fromMap to include null check for nested objects ***
-
 /**
  * @param {DartClass} clazz
  */
 insertFromMap(clazz) {
+    if (this.fromJSON) {
+        this.requiresImport('/core/utils/parsing/parsing.dart');
+
+        const primitiveParser = (prop, value) => {
+            if (prop.isEnum) {
+                return `${prop.type}.values[ParsingUtils.parseInt(${value})]`;
+            }
+
+            if (prop.isMap) {
+                return `${value} == null ? const {} : Map<String, dynamic>.from(${value})`;
+            }
+
+            switch (prop.type) {
+                case 'String':
+                    return `ParsingUtils.parseString(${value})`;
+                case 'int':
+                    return `ParsingUtils.parseInt(${value})`;
+                case 'double':
+                    return `ParsingUtils.parseDouble(${value})`;
+                case 'bool':
+                    return `ParsingUtils.parseBool(${value})`;
+                case 'DateTime':
+                    return `DateTime.fromMillisecondsSinceEpoch(ParsingUtils.parseInt(${value}))`;
+                case 'Color':
+                    return `Color(ParsingUtils.parseInt(${value}))`;
+                case 'IconData':
+                    return `IconData(ParsingUtils.parseInt(${value}), fontFamily: 'MaterialIcons')`;
+                default:
+                    return value;
+            }
+        };
+
+        const listParser = (prop, value) => {
+            const item = prop.collectionType;
+            let mapper = 'item';
+
+            if (item.isEnum) {
+                mapper = `${item.type}.values[ParsingUtils.parseInt(item)]`;
+            } else if (item.isPrimitive || isValueObjectType(item.type)) {
+                switch (item.type) {
+                    case 'String':
+                        mapper = 'ParsingUtils.parseString(item)';
+                        break;
+                    case 'int':
+                        mapper = 'ParsingUtils.parseInt(item)';
+                        break;
+                    case 'double':
+                        mapper = 'ParsingUtils.parseDouble(item)';
+                        break;
+                    case 'bool':
+                        mapper = 'ParsingUtils.parseBool(item)';
+                        break;
+                    default:
+                        mapper = 'item';
+                }
+            } else {
+                mapper = `${item.type}.fromMap(\n        Map<String, dynamic>.from(item),\n      )`;
+            }
+
+            let parsed = `ParsingUtils.parseList(\n      ${value},\n      (item) => ${mapper},\n    )`;
+
+            if (prop.isSet) {
+                parsed = `Set<${item.type}>.from(${parsed})`;
+            }
+
+            if (prop.isNullable) {
+                return `${value} == null ? null : ${parsed}`;
+            }
+
+            return parsed;
+        };
+
+        let method = `factory ${clazz.name}.fromMap(Map<String, dynamic> map) {\n`;
+        method += `  return ${clazz.type}(\n`;
+
+        for (const prop of clazz.properties) {
+            const value = `map['${prop.key}']`;
+            method += `    ${clazz.hasNamedConstructor ? `${prop.name}: ` : ''}`;
+
+            if (prop.isList || prop.isSet) {
+                method += listParser(prop, value);
+            } else if (prop.isEnum || prop.isPrimitive || prop.isMap || isValueObjectType(prop.type)) {
+                method += primitiveParser(prop, value);
+            } else if (prop.isNullable) {
+                method += `${value} != null ? ${prop.type}.fromMap(\n      Map<String, dynamic>.from(${value} ?? {}),\n    ) : null`;
+            } else {
+                method += `${prop.type}.fromMap(\n      Map<String, dynamic>.from(${value} ?? {}),\n    )`;
+            }
+
+            method += ',\n';
+        }
+
+        method += '  );\n';
+        method += '}';
+
+        this.appendOrReplace('fromMap', method, `factory ${clazz.name}.fromMap(Map<String, dynamic> map)`, clazz);
+        return;
+    }
+
     let props = clazz.properties;
 
     /**
@@ -1217,6 +1527,24 @@ insertFromMap(clazz) {
 
     this.appendOrReplace('fromMap', method, `factory ${clazz.name}.fromMap(Map<String, dynamic> map)`, clazz);
 }
+
+    /**
+     * @param {DartClass} clazz
+     */
+    insertToEntity(clazz) {
+        const entityName = createEntityName(clazz.name);
+        let method = `${entityName} toEntity() {\n`;
+        method += `  return ${entityName}(\n`;
+
+        for (const prop of clazz.properties) {
+            method += `    ${prop.name}: ${entityMappingForProperty(prop)},\n`;
+        }
+
+        method += '  );\n';
+        method += '}';
+
+        this.appendOrReplace('toEntity', method, `${entityName} toEntity()`, clazz);
+    }
     /**
      * @param {DartClass} clazz
      */
@@ -1406,41 +1734,6 @@ insertFromMap(clazz) {
 
         this.appendOrReplace('props', method, 'List<Object> get props', clazz);
     }
-
-    // *** UPDATE 4: Added custom parse methods ***
-
-    //     /**
-//  * @param {DartClass} clazz
-//  */
-// insertParseMethods(clazz) {
-//     const parseDoubleMethod = `
-//   static double parseDouble(dynamic value) {
-//     if (value == null) return 0.0;
-//     if (value is double) return value;
-//     if (value is int) return value.toDouble();
-//     if (value is String) return double.tryParse(value) ?? 0.0;
-//     return 0.0;
-//   }`;
-
-//     const parseIntMethod = `
-//   static int parseInt(dynamic value) {
-//     if (value == null) return 0;
-//     if (value is int) return value;
-//     if (value is String) return int.tryParse(value) ?? 0;
-//     return 0;
-//   }`;
-
-//     const parseStringMethod = `
-//   static String parseString(dynamic value) {
-//     if (value == null) return '';
-//     return value.toString();
-//   }`;
-
-//     // Use appendOrReplace to avoid duplicates
-//     this.appendOrReplace('parseDouble', parseDoubleMethod, `static double parseDouble(dynamic value)`, clazz);
-//     this.appendOrReplace('parseInt', parseIntMethod, `static int parseInt(dynamic value)`, clazz);
-//     this.appendOrReplace('parseString', parseStringMethod, `static String parseString(dynamic value)`, clazz);
-// }
 
 /**
  * @param {DartClass} clazz
@@ -1822,13 +2115,12 @@ class JsonReader {
     getClazzes(object, key) {
         let clazz = new DartClass();
         clazz.startsAtLine = 1;
-        clazz.name = capitalize(key);
+        clazz.name = createModelName(capitalize(key));
 
         let isArray = false;
         if (object instanceof Array) {
             isArray = true;
             clazz.isArray = true;
-            clazz.name += 's';
         } else {
             this.clazzes.push(clazz);
         }
@@ -1836,7 +2128,7 @@ class JsonReader {
         let i = 1;
         clazz.classContent += 'class ' + clazz.name + ' {\n';
         for (let key in object) {
-            let k = !isArray ? key : removeEnd(clazz.name.toLowerCase(), 's');
+            let k = !isArray ? key : stripGeneratedSuffix(clazz.name).toLowerCase();
 
             let value = object[key];
             let type = this.getPrimitive(value);
@@ -1851,7 +2143,7 @@ class JsonReader {
 
                         if (i0 == null) {
                             this.getClazzes(value[0], listType);
-                            type = 'List<' + capitalize(listType) + '>';
+                            type = 'List<' + createModelName(capitalize(listType)) + '>';
                         } else {
                             type = 'List<' + i0 + '>';
                         }
@@ -1860,7 +2152,7 @@ class JsonReader {
                     }
                 } else {
                     this.getClazzes(value, k);
-                    type = !isArray ? capitalize(k) : `List<${capitalize(k)}>`;
+                    type = !isArray ? createModelName(capitalize(k)) : `List<${createModelName(capitalize(k))}>`;
                 }
             }
 
@@ -1993,7 +2285,9 @@ class JsonReader {
 
     async commitJson(progress, separate) {
         let path = getCurrentPath();
-        let fileContent = '';
+        let modelContent = '';
+        let entityContent = '';
+        let modelImports = [];
 
         const length = this.files.length;
         for (let i = 0; i < length; i++) {
@@ -2005,8 +2299,6 @@ class JsonReader {
                 this.addGeneratedFilesAsImport(generator);
             }
 
-            const imports = `${generator.imports.formatted}\n`;
-
             progress.report({
                 increment: ((1 / length) * 100),
                 message: `Creating file ${file.name}...`
@@ -2015,25 +2307,31 @@ class JsonReader {
             try {
                 if (separate) {
                     const clazz = generator.clazzes[0];
-                    const replacement = imports + clazz.generateClassReplacement();
-                    if (i > 0) {
-                        await writeFile(replacement, file.name, false, path);
-                    } else {
-                        await getEditor().edit(editor => {
-                            editorReplace(editor, 0, null, replacement);
-                        });
-                    }
+                    const modelImportsForFile = formatImportStatements([
+                        ...generator.imports.values,
+                        `import '${createFileName(createEntityName(clazz.name))}.dart';`,
+                    ]);
+                    const modelReplacement = `${modelImportsForFile}\n${clazz.generateClassReplacement()}`;
+                    const entityReplacement = `${getEntityImports(clazz, true)}\n${createEntityClass(clazz)}`;
+
+                    await writeFile(modelReplacement, createFileName(clazz.name), i == 0, path);
+                    await writeFile(entityReplacement, createFileName(createEntityName(clazz.name)), false, path);
                 } else {
                     for (let clazz of generator.clazzes) {
-                        fileContent += clazz.generateClassReplacement() + '\n\n';
+                        modelContent += clazz.generateClassReplacement() + '\n\n';
+                        entityContent += createEntityClass(clazz) + '\n\n';
                     }
+                    modelImports.push(...generator.imports.values);
 
                     if (isLast) {
-                        fileContent = removeEnd(fileContent, '\n\n');
-                        await getEditor().edit(editor => {
-                            editorReplace(editor, 0, null, fileContent);
-                            editorInsert(editor, 0, imports);
-                        });
+                        const modelsFileContent = `${formatImportStatements([
+                            ...modelImports,
+                            `import 'entities.dart';`,
+                        ])}\n${removeEnd(modelContent, '\n\n')}`;
+                        const entitiesFileContent = `${getEntityImports(generator.clazzes[0], false)}\n${removeEnd(entityContent, '\n\n')}`;
+
+                        await writeFile(modelsFileContent, 'models', true, path);
+                        await writeFile(entitiesFileContent, 'entities', false, path);
                     }
                 }
             } catch (error) {
@@ -2099,8 +2397,14 @@ class DataClassCodeActions {
         const isInConstrRange = line >= clazz.constrStartsAtLine && line <= clazz.constrEndsAtLine;
         if (!(isAtClassDeclaration || isInProperties || isInConstrRange)) return codeActions;
 
-        if (!this.clazz.isWidget)
-            codeActions.push(this.createDataClassFix(this.clazz));
+        if (!this.clazz.isWidget) {
+            const architectureFixes = this.createArchitectureFixes();
+            for (const fix of architectureFixes) {
+                if (fix != null) {
+                    codeActions.push(fix);
+                }
+            }
+        }
 
         if (readSetting('constructor.enabled'))
             codeActions.push(this.createConstructorFix());
@@ -2127,6 +2431,32 @@ class DataClassCodeActions {
         return codeActions;
     }
 
+    createArchitectureFixes() {
+        const fileName = path.basename(this.document.fileName || '').toLowerCase();
+
+        if (fileName.endsWith('model.dart')) {
+            return [
+                this.createEntityCompanionFix(),
+                this.createModelAndEntityFix(),
+                this.createModelFix(),
+            ];
+        }
+
+        if (fileName.endsWith('entity.dart')) {
+            return [
+                this.createModelCompanionFix(),
+                this.createModelAndEntityFix(),
+                this.createEntityCompanionFix(),
+            ];
+        }
+
+        return [
+            this.createModelAndEntityFix(),
+            this.createModelFix(),
+            this.createEntityCompanionFix(),
+        ];
+    }
+
     /**
      * @param {string} description
      * @param {(arg0: vscode.WorkspaceEdit) => void} editor
@@ -2143,25 +2473,98 @@ class DataClassCodeActions {
      * @param {DartClass} clazz
      */
     createDataClassFix(clazz) {
-        if (clazz.didChange) {
-            const fix = new vscode.CodeAction('Generate data class', vscode.CodeActionKind.QuickFix);
-            fix.edit = this.getClazzEdit(clazz);
-            return fix;
-        }
+        return this.createModelAndEntityFix();
     }
 
     /**
      * @param {string} part
      * @param {string} description
      */
-    constructQuickFix(part, description) {
-        const generator = new DataClassGenerator(this.document.getText(), null, false, part);
+    constructQuickFix(part, description, fromJSON = false) {
+        const generator = new DataClassGenerator(this.document.getText(), null, fromJSON, part);
         const fix = new vscode.CodeAction(description, vscode.CodeActionKind.QuickFix);
         const clazz = this.findQuickFixClazz(generator);
         if (clazz != null && clazz.didChange) {
             fix.edit = this.getClazzEdit(clazz, generator.imports);
             return fix;
         }
+    }
+
+    createModelFix() {
+        return this.constructQuickFix(null, 'Generate Model', true);
+    }
+
+    createModelAndEntityFix() {
+        const generator = new DataClassGenerator(this.document.getText(), null, true);
+        const clazz = this.findQuickFixClazz(generator);
+        const entityText = createEntityClass(this.clazz);
+
+        if (clazz == null) {
+            return;
+        }
+
+        const companion = this.findCompanionClass(createEntityName(this.clazz.name));
+        const shouldUpdateModel = clazz.didChange;
+        const shouldUpdateEntity = companion == null || !areStrictEqual(companion.classContent, entityText);
+
+        if (!shouldUpdateModel && !shouldUpdateEntity) {
+            return;
+        }
+
+        const fix = new vscode.CodeAction('Generate Data Class (Model + Entity)', vscode.CodeActionKind.QuickFix);
+        const edit = new vscode.WorkspaceEdit();
+        const imports = new Imports(this.document.getText());
+        for (const importValue of [
+            ...generator.imports.values,
+            'package:equatable/equatable.dart',
+        ]) {
+            imports.requiresImport(importValue);
+        }
+
+        addReplaceEdits(edit, clazz, imports);
+        this.addCompanionClassEdit(edit, createEntityName(this.clazz.name), entityText, [], false);
+
+        fix.edit = edit;
+        return fix;
+    }
+
+    createEntityCompanionFix() {
+        const entityText = createEntityClass(this.clazz);
+        const companion = this.findCompanionClass(createEntityName(this.clazz.name));
+
+        if (companion != null && areStrictEqual(companion.classContent, entityText)) {
+            return;
+        }
+
+        const fix = new vscode.CodeAction('Generate Entity', vscode.CodeActionKind.QuickFix);
+        const edit = new vscode.WorkspaceEdit();
+
+        this.addCompanionClassEdit(edit, createEntityName(this.clazz.name), entityText, [
+            'package:equatable/equatable.dart',
+        ]);
+
+        fix.edit = edit;
+        return fix;
+    }
+
+    createModelCompanionFix() {
+        const modelClazz = createArchitectureClass(this.clazz, 'model');
+        const generator = new DataClassGenerator(modelClazz.classContent, [modelClazz], true);
+        const generatedClazz = generator.clazzes[0];
+        const modelText = generatedClazz.generateClassReplacement();
+        const companion = this.findCompanionClass(createModelName(this.clazz.name));
+
+        if (companion != null && areStrictEqual(companion.classContent, modelText)) {
+            return;
+        }
+
+        const fix = new vscode.CodeAction('Generate Model', vscode.CodeActionKind.QuickFix);
+        const edit = new vscode.WorkspaceEdit();
+
+        this.addCompanionClassEdit(edit, createModelName(this.clazz.name), modelText, generator.imports.values);
+
+        fix.edit = edit;
+        return fix;
     }
 
     /** @param {DataClassGenerator} generator */
@@ -2177,6 +2580,43 @@ class DataClassCodeActions {
      */
     getClazzEdit(clazz, imports = null) {
         return getReplaceEdit(clazz, imports || this.generator.imports);
+    }
+
+    findCompanionClass(name) {
+        for (const clazz of this.generator.clazzes) {
+            if (clazz.name == name) {
+                return clazz;
+            }
+        }
+    }
+
+    addCompanionClassEdit(edit, className, classText, importValues = [], manageImports = true) {
+        if (manageImports) {
+            const imports = new Imports(this.document.getText());
+            for (const importValue of importValues) {
+                imports.requiresImport(importValue);
+            }
+
+            if (imports.hasImports) {
+                if (imports.hasPreviousImports) {
+                    edit.replace(this.uri, imports.range, imports.formatted);
+                } else {
+                    edit.insert(this.uri, new vscode.Position(0, 0), `${imports.formatted}\n\n`);
+                }
+            }
+        }
+
+        const companion = this.findCompanionClass(className);
+        if (companion != null) {
+            edit.replace(this.uri, new vscode.Range(
+                new vscode.Position(companion.startsAtLine - 1, 0),
+                new vscode.Position(companion.endsAtLine, 1)
+            ), `${classText}\n`);
+            return;
+        }
+
+        const insertLine = this.clazz.isLastInFile ? this.clazz.endsAtLine : this.clazz.endsAtLine + 1;
+        edit.insert(this.uri, new vscode.Position(insertLine, 0), `\n\n${classText}\n`);
     }
 
     createConstructorFix() {
@@ -2236,9 +2676,19 @@ class DataClassCodeActions {
  * @param {Imports} imports
  */
 function getReplaceEdit(values, imports = null, showLogs = false) {
+    const edit = new vscode.WorkspaceEdit();
+    addReplaceEdits(edit, values, imports, showLogs);
+    return edit;
+}
+
+/**
+ * @param {vscode.WorkspaceEdit} edit
+ * @param {any} values
+ * @param {Imports} imports
+ */
+function addReplaceEdits(edit, values, imports = null, showLogs = false) {
     const clazzes = values instanceof DartClass ? [values] : values;
     const hasMultiple = clazzes.length > 1;
-    const edit = new vscode.WorkspaceEdit();
     const uri = getDoc().uri;
 
     const noChanges = [];
@@ -2275,11 +2725,9 @@ function getReplaceEdit(values, imports = null, showLogs = false) {
         if (imports.hasPreviousImports && areImportsseparated) {
             edit.replace(uri, imports.range, imports.formatted);
         } else {
-            edit.insert(uri, new vscode.Position(imports.startAtLine, 0), imports.formatted + '\n');
+            edit.insert(uri, new vscode.Position(imports.startAtLine || 0, 0), imports.formatted + '\n');
         }
     }
-
-    return edit;
 }
 
 /**
