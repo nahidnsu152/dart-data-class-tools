@@ -3,7 +3,7 @@
 	"displayName": "Dart Data Class Generator Clean Architecture",
 	"description": "Create dart data classes easily, fast and without writing boilerplate or running code generation.",
 	"publisher": "nazmul-hasan",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"engines": {
 		"vscode": "^1.107.0"
 	},

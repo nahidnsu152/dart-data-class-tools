@@ -800,6 +800,26 @@ function entityMappingForProperty(prop, source = null) {
     return `${name}${prop.isNullable ? '?' : ''}.toEntity()`;
 }
 
+function modelMappingFromEntity(prop, source) {
+    const item = prop.collectionType;
+
+    if (prop.isEnum || item.isPrimitive || item.isMap || isValueObjectType(item.type)) {
+        return source;
+    }
+
+    const nullSafe = prop.isNullable ? '?' : '';
+
+    if (prop.isList) {
+        return `${source}${nullSafe}.map((item) => ${createModelName(item.type)}.fromEntity(item)).toList()`;
+    }
+
+    if (prop.isSet) {
+        return `${source}${nullSafe}.map((item) => ${createModelName(item.type)}.fromEntity(item)).toSet()`;
+    }
+
+    return `${createModelName(prop.type)}.fromEntity(${source}${nullSafe})`;
+}
+
 function entityDefaultValue(prop) {
     if (prop.isNullable) return 'null';
     if (prop.isCollection) {
@@ -969,8 +989,10 @@ class DataClassGenerator {
                         this.insertToJson(clazz);
                     if (readSetting('fromJson.enabled') && this.isPartSelected('serialization'))
                         this.insertFromJson(clazz);
-                    if (this.fromJSON && this.isPartSelected('serialization'))
+                    if (this.fromJSON && this.isPartSelected('serialization')) {
+                        this.insertFromEntity(clazz);
                         this.insertToEntity(clazz);
+                    }
                 }
 
                 if (readSetting('toString.enabled') && this.isPartSelected('toString'))
@@ -1553,6 +1575,24 @@ insertFromMap(clazz) {
 
     this.appendOrReplace('fromMap', method, `factory ${clazz.name}.fromMap(Map<String, dynamic> map)`, clazz);
 }
+
+    /**
+     * @param {DartClass} clazz
+     */
+    insertFromEntity(clazz) {
+        const entityName = createEntityName(clazz.name);
+        let method = `factory ${clazz.name}.fromEntity(${entityName} entity) {\n`;
+        method += `  return ${clazz.type}(\n`;
+
+        for (const prop of clazz.properties) {
+            method += `    ${clazz.hasNamedConstructor ? `${prop.name}: ` : ''}${modelMappingFromEntity(prop, `entity.${prop.name}`)},\n`;
+        }
+
+        method += '  );\n';
+        method += '}';
+
+        this.appendOrReplace('fromEntity', method, `factory ${clazz.name}.fromEntity(`, clazz);
+    }
 
     /**
      * @param {DartClass} clazz
