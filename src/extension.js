@@ -800,6 +800,26 @@ function entityMappingForProperty(prop, source = null) {
     return `${name}${prop.isNullable ? '?' : ''}.toEntity()`;
 }
 
+function entityDefaultValue(prop) {
+    if (prop.isNullable) return 'null';
+    if (prop.isCollection) {
+        return prop.isList || prop.isSet ? 'const []' : 'const {}';
+    }
+    switch (prop.type) {
+        case 'int':
+        case 'num': return '0';
+        case 'double': return '0.0';
+        case 'String': return '""';
+        case 'bool': return 'false';
+        case 'dynamic': return 'null';
+        default:
+            if (prop.isEnum || isValueObjectType(prop.type)) {
+                return `${prop.type}.init()`;
+            }
+            return `${createEntityName(prop.type)}.init()`;
+    }
+}
+
 function createEntityClass(clazz) {
     const entityName = createEntityName(clazz.name);
     const hasNullableProps = clazz.properties.some((prop) => prop.isNullable);
@@ -814,6 +834,12 @@ function createEntityClass(clazz) {
         content += `    ${prop.isNullable ? '' : 'required '}this.${prop.name},\n`;
     }
     content += '  });\n\n';
+
+    content += `  factory ${entityName}.init() => ${entityName}(\n`;
+    for (const prop of clazz.properties) {
+        content += `    ${prop.name}: ${entityDefaultValue(prop)},\n`;
+    }
+    content += '  );\n\n';
 
     content += `  ${entityName} copyWith({\n`;
     for (const prop of clazz.properties) {
