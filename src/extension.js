@@ -608,7 +608,8 @@ class ClassField {
      */
     constructor(type, name, line = 1, isFinal = true, isConst = false, json = false) {
         this.rawType = type;
-        this.name = toVarName(name);
+        const identifierSource = json ? name.replace(/^_+/, '') || name : name;
+        this.name = toVarName(identifierSource);
         this.key = json ? name : varToKey(this.name);
         this.line = line;
         this.isFinal = isFinal;
@@ -2222,8 +2223,9 @@ class JsonReader {
                 }
             }
 
-            clazz.properties.push(new ClassField(type, k, ++i, true, false, true));
-            clazz.classContent += `  final ${type} ${toVarName(k)};\n`;
+            const field = new ClassField(type, k, ++i, true, false, true);
+            clazz.properties.push(field);
+            clazz.classContent += `  final ${type} ${field.name};\n`;
 
             if (isArray) break;
         }
