@@ -1156,10 +1156,10 @@ class DataClassGenerator {
         let startBracket = '({';
         let endBracket = '})';
 
-        if (clazz.constr != null) {
-            if (clazz.constr.trimLeft().startsWith('const'))
-                constr += 'const ';
+        if (this.isConstConstructor(clazz))
+            constr += 'const ';
 
+        if (clazz.constr != null) {
             const fConstr = clazz.constr.replace('const', '').trimLeft();
 
             if (fConstr.startsWith(clazz.name + '([')) startBracket = '([';
@@ -1169,9 +1169,6 @@ class DataClassGenerator {
             if (fConstr.includes('])')) endBracket = '])';
             else if (fConstr.includes('})')) endBracket = '})';
             else endBracket = ')';
-        } else {
-            if (clazz.isWidget)
-                constr += 'const ';
         }
 
         constr += clazz.name + startBracket + '\n';
@@ -1255,6 +1252,25 @@ class DataClassGenerator {
             clazz.constrDifferent = true;
             this.append(constr, clazz, true);
         }
+    }
+
+    /**
+     * A constructor can only be const when every property is final and the
+     * constructor has no body.
+     *
+     * @param {DartClass} clazz
+     */
+    isConstConstructor(clazz) {
+        if (clazz.isWidget) return true;
+
+        const hasBody = clazz.constr != null && clazz.constr.trimRight().endsWith('{');
+        if (hasBody) return false;
+
+        if (clazz.constr != null && clazz.constr.trimLeft().startsWith('const')) return true;
+
+        if (!readSetting('constructor.const')) return false;
+
+        return clazz.properties.every((prop) => prop.isFinal);
     }
 
     /**
@@ -2130,7 +2146,7 @@ class JsonReader {
     constructor(source, className) {
         this.json = this.toPlainJson(source);
 
-        this.clazzName = capitalize(className);
+        this.clazzName = toClassName(className);
         this.clazzes = [];
         this.files = [];
 
@@ -2182,7 +2198,7 @@ class JsonReader {
     getClazzes(object, key) {
         let clazz = new DartClass();
         clazz.startsAtLine = 1;
-        clazz.name = createModelName(capitalize(key));
+        clazz.name = createModelName(toClassName(key));
 
         let isArray = false;
         if (object instanceof Array) {
@@ -2195,7 +2211,7 @@ class JsonReader {
         let i = 1;
         clazz.classContent += 'class ' + clazz.name + ' {\n';
         for (let key in object) {
-            let k = !isArray ? key : stripGeneratedSuffix(clazz.name).toLowerCase();
+            let k = !isArray ? key : createFileName(stripGeneratedSuffix(clazz.name));
 
             let value = object[key];
             let type = this.getPrimitive(value);
@@ -2210,7 +2226,7 @@ class JsonReader {
 
                         if (i0 == null) {
                             this.getClazzes(value[0], listType);
-                            type = 'List<' + createModelName(capitalize(listType)) + '>';
+                            type = 'List<' + createModelName(toClassName(listType)) + '>';
                         } else {
                             type = 'List<' + i0 + '>';
                         }
@@ -2219,7 +2235,7 @@ class JsonReader {
                     }
                 } else {
                     this.getClazzes(value, k);
-                    type = !isArray ? createModelName(capitalize(k)) : `List<${createModelName(capitalize(k))}>`;
+                    type = !isArray ? createModelName(toClassName(k)) : `List<${createModelName(toClassName(k))}>`;
                 }
             }
 
@@ -2809,16 +2825,42 @@ function isBlank(str) {
  * @param {string} name
  */
 function createFileName(name) {
-    let r = '';
-    for (let i = 0; i < name.length; i++) {
-        let c = name[i];
-        if (c == c.toUpperCase()) {
-            if (i == 0) r += c.toLowerCase();
-            else r += '_' + c.toLowerCase();
-        } else {
-            r += c;
-        }
-    }
+    if (isBlank(name)) return '';
+
+    return name
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .replace(/[^A-Za-z0-9]+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '')
+        .toLowerCase();
+}
+
+/**
+ * Converts an arbitrary name (e.g. group_Configurator, group-configurator)
+ * into a valid Dart class name (GroupConfigurator).
+ *
+ * @param {string} name
+ */
+function toClassName(name) {
+    if (isBlank(name)) return '';
+
+    const words = name
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/[^A-Za-z0-9]+/g, ' ')
+        .trim()
+        .split(' ')
+        .filter((word) => word.length > 0);
+
+    let r = words.map((word) => {
+        // Words that are entirely uppercase (URL, HTTP) would otherwise keep
+        // their casing and blow up the file name generated from them.
+        return word == word.toUpperCase() ? capitalize(word.toLowerCase()) : capitalize(word);
+    }).join('');
+
+    if (r.length > 0 && r[0].match(new RegExp(/[0-9]/)))
+        r = 'N' + r;
 
     return r;
 }
@@ -3241,6 +3283,7 @@ module.exports = {
     getCurrentPath,
     toVarName,
     createFileName,
+    toClassName,
     editorInsert,
     editorReplace,
     editorDelete,

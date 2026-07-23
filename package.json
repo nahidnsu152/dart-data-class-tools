@@ -113,6 +113,15 @@
 						"default": "ask",
 						"description": "Whether to separate a JSON into multiple files, when the JSON contains nested objects. ask: choose manually every time, separate: always separate into multiple files, current_file: always insert all classes into the current file."
 					},
+					"dart-data-class-generator.constructor.const": {
+						"type": "boolean",
+						"enum": [
+							true,
+							false
+						],
+						"default": true,
+						"description": "If true, generates a const constructor for a data class, when all of its properties are final."
+					},
 					"dart-data-class-generator.constructor.enabled": {
 						"type": "boolean",
 						"enum": [
