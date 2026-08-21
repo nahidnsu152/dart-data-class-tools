@@ -652,9 +652,68 @@ class ClassField {
         return this;
     }
 
+    /**
+     * The type arguments of a `Map<K, V>`, or null when the map is untyped or
+     * has an unexpected number of arguments.
+     */
+    get mapArgs() {
+        if (!this.isMap) return null;
+
+        const raw = this.type;
+        const start = raw.indexOf('<');
+        if (start == -1) return null;
+
+        const args = splitGenericArgs(raw.substring(start + 1, raw.lastIndexOf('>')));
+        return args.length == 2 ? args : null;
+    }
+
+    get mapKeyType() {
+        const args = this.mapArgs;
+        return args == null ? 'dynamic' : args[0];
+    }
+
+    get mapValueRawType() {
+        const args = this.mapArgs;
+        return args == null ? 'dynamic' : args[1];
+    }
+
+    get mapValueField() {
+        return new ClassField(this.mapValueRawType, this.name, this.line, this.isFinal);
+    }
+
+    /**
+     * `Map<String, SomeModel>`: a map whose values are generated classes and
+     * therefore have to be serialized entry by entry.
+     */
+    get isModelMap() {
+        if (!this.isMap || this.mapKeyType != 'String') return false;
+
+        const value = this.mapValueField;
+        return !value.isCollection && !value.isEnum && !isValueObjectType(value.type);
+    }
+
+    /**
+     * `Map<String, String>` and friends: the values stay primitive but still
+     * need coercion, since `Map<String, dynamic>` is not assignable to them.
+     */
+    get isTypedValueMap() {
+        if (!this.isMap || this.mapKeyType != 'String') return false;
+
+        switch (this.mapValueField.type) {
+            case 'String':
+            case 'int':
+            case 'double':
+            case 'bool':
+            case 'num':
+                return true;
+            default:
+                return false;
+        }
+    }
+
     get isPrimitive() {
         let t = this.collectionType.type;
-        return t == 'String' || t == 'num' || t == 'dynamic' || t == 'bool' || this.isDouble || this.isInt || this.isMap;
+        return t == 'String' || t == 'num' || t == 'dynamic' || t == 'bool' || this.isDouble || this.isInt || (this.isMap && !this.isModelMap);
     }
 
     get isPrivate() {
@@ -729,6 +788,139 @@ function createEntityName(name) {
     return `${stripGeneratedSuffix(name)}Entity`;
 }
 
+/**
+ * Splits the top level arguments of a generic type, so that
+ * `String, Map<String, int>` yields ['String', 'Map<String, int>'].
+ *
+ * @param {string} source
+ */
+function splitGenericArgs(source) {
+    const args = [];
+    let depth = 0;
+    let current = '';
+
+    for (const char of source) {
+        if (char == '<') depth++;
+        else if (char == '>') depth--;
+
+        if (char == ',' && depth == 0) {
+            args.push(current.trim());
+            current = '';
+            continue;
+        }
+
+        current += char;
+    }
+
+    if (current.trim().length > 0) {
+        args.push(current.trim());
+    }
+
+    return args;
+}
+
+/**
+ * @param {string} name
+ */
+function singularize(name) {
+    if (name.endsWith('ies')) return removeEnd(name, 'ies') + 'y';
+    if (name.endsWith('s')) return removeEnd(name, 's');
+    return name;
+}
+
+const DART_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const HASH_LIKE_KEY = /^[0-9a-f]{16,}$/i;
+
+/**
+ * True when a JSON key reads as data rather than as a field name: option
+ * labels, numeric ids, generated hashes.
+ *
+ * @param {string} key
+ */
+function looksLikeDataKey(key) {
+    if (!DART_IDENTIFIER.test(key)) return true;
+    if (HASH_LIKE_KEY.test(key)) return true;
+    return key.length > 40;
+}
+
+/**
+ * A comparable signature of a JSON value, used to check whether every value of
+ * an object has the same shape.
+ *
+ * @param {any} value
+ */
+function jsonShapeSignature(value) {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'list';
+    if (typeof value === 'object') return 'object:' + Object.keys(value).sort().join(',');
+    return typeof value;
+}
+
+/** Candidate strength, strongest first. Only 'confident' is pre-ticked. */
+const DICTIONARY_TIERS = ['confident', 'likely', 'possible'];
+
+/**
+ * Rates an object as a dictionary candidate: every value has the same shape, so
+ * the keys may be data. Only unusable-as-identifier keys settle it; the weaker
+ * tiers are suggestions the user confirms, because `{facebook: ..., twitter: ...}`
+ * is as plausibly a class as it is a map and no single sample can say which.
+ *
+ * @param {any} object
+ * @param {number} minKeys
+ */
+function inspectDictionaryShape(object, minKeys = 3) {
+    if (object == null || typeof object !== 'object' || Array.isArray(object)) return null;
+
+    const keys = Object.keys(object);
+    if (keys.length == 0) return null;
+
+    const signatures = new Set(keys.map((key) => jsonShapeSignature(object[key])));
+    if (signatures.size != 1) return null;
+
+    const signature = signatures.values().next().value;
+    if (signature == 'null' || signature == 'list') return null;
+
+    const valueKind = signature.startsWith('object:') ? 'object' : 'primitive';
+    let tier = null;
+
+    if (keys.some(looksLikeDataKey)) {
+        tier = 'confident';
+    } else if (valueKind == 'object' && keys.length >= 2) {
+        // Repeated identical record shapes read like a map, but a single entry
+        // is indistinguishable from a wrapper class, so it is left alone.
+        tier = 'likely';
+    } else if (valueKind == 'primitive' && keys.length >= minKeys) {
+        // Below the threshold this would flag every small class of same typed
+        // fields; above it, offering the choice beats guessing.
+        tier = 'possible';
+    }
+
+    if (tier == null) return null;
+
+    return { tier: tier, valueKind: valueKind, keyCount: keys.length };
+}
+
+/**
+ * The first value of a plain object, used as the sample a dictionary's value
+ * class is generated from.
+ *
+ * @param {any} object
+ */
+function firstValue(object) {
+    if (object == null || typeof object !== 'object' || Array.isArray(object)) return null;
+
+    const keys = Object.keys(object);
+    return keys.length > 0 ? object[keys[0]] : null;
+}
+
+/**
+ * @param {string} path
+ * @param {string} segment
+ */
+function joinJsonPath(path, segment) {
+    return path.length == 0 ? segment : `${path}.${segment}`;
+}
+
 function isValueObjectType(type) {
     return type == 'String' ||
         type == 'num' ||
@@ -754,6 +946,10 @@ function toEntityType(rawType) {
         return `Set<${toEntityType(field.collectionType.rawType)}>${nullableSuffix}`;
     }
 
+    if (field.isModelMap) {
+        return `Map<${field.mapKeyType}, ${toEntityType(field.mapValueRawType)}>${nullableSuffix}`;
+    }
+
     if (field.isMap || field.isEnum || isValueObjectType(field.type)) {
         return rawType;
     }
@@ -773,6 +969,10 @@ function toModelType(rawType) {
         return `Set<${toModelType(field.collectionType.rawType)}>${nullableSuffix}`;
     }
 
+    if (field.isModelMap) {
+        return `Map<${field.mapKeyType}, ${toModelType(field.mapValueRawType)}>${nullableSuffix}`;
+    }
+
     if (field.isMap || field.isEnum || isValueObjectType(field.type)) {
         return rawType;
     }
@@ -783,6 +983,11 @@ function toModelType(rawType) {
 function entityMappingForProperty(prop, source = null) {
     const name = source || prop.name;
     const item = prop.collectionType;
+
+    if (prop.isModelMap) {
+        const nullSafe = prop.isNullable ? '?' : '';
+        return `${name}${nullSafe}.map((key, value) => MapEntry(key, value.toEntity()))`;
+    }
 
     if (prop.isEnum || item.isPrimitive || item.isMap || isValueObjectType(item.type)) {
         return name;
@@ -803,6 +1008,12 @@ function entityMappingForProperty(prop, source = null) {
 
 function modelMappingFromEntity(prop, source) {
     const item = prop.collectionType;
+
+    if (prop.isModelMap) {
+        const nullSafe = prop.isNullable ? '?' : '';
+        const modelName = createModelName(prop.mapValueField.type);
+        return `${source}${nullSafe}.map((key, value) => MapEntry(key, ${modelName}.fromEntity(value)))`;
+    }
 
     if (prop.isEnum || item.isPrimitive || item.isMap || isValueObjectType(item.type)) {
         return source;
@@ -916,8 +1127,10 @@ function getEntityImports(clazz, separate = false) {
         const currentEntity = createEntityName(clazz.name);
 
         for (const prop of clazz.properties) {
-            const item = prop.collectionType;
-            if (item.isPrimitive || item.isMap || item.isEnum || isValueObjectType(item.type)) {
+            // A map of models still needs the entity of its value type imported.
+            const item = prop.isModelMap ? prop.mapValueField : prop.collectionType;
+
+            if (!prop.isModelMap && (item.isPrimitive || item.isMap || item.isEnum || isValueObjectType(item.type))) {
                 continue;
             }
 
@@ -1333,6 +1546,9 @@ class DataClassGenerator {
                         const collectionSuffix = prop.isSet ? `${nullSafe}.toList()` : '';
                         method += `${prop.name}${nullSafe}.map((item) => item.toMap()).toList()${collectionSuffix},\n`;
                     }
+                } else if (prop.isModelMap) {
+                    const nullSafe = prop.isNullable ? '?' : '';
+                    method += `${prop.name}${nullSafe}.map((key, value) => MapEntry(key, value.toMap())),\n`;
                 } else if (prop.isMap) {
                     method += `${prop.name},\n`;
                 } else {
@@ -1391,7 +1607,9 @@ class DataClassGenerator {
             } else if (p.isCollection) {
                 const nullSafe = p.isNullable ? '?' : '';
 
-                if (p.isMap || p.collectionType.isPrimitive) {
+                if (p.isModelMap) {
+                    method += `${p.name}${nullSafe}.map((key, value) => MapEntry(key, value.toMap())),\n`;
+                } else if (p.isMap || p.collectionType.isPrimitive) {
                     const mapFlag = p.isSet ? `${nullSafe}.toList()` : '';
                     method += `${p.name}${mapFlag},\n`;
                 } else {
@@ -1483,6 +1701,40 @@ insertFromMap(clazz) {
             return parsed;
         };
 
+        const mapParser = (prop, value) => {
+            const item = prop.mapValueField;
+            let mapper;
+
+            if (prop.isModelMap) {
+                mapper = `${item.type}.fromMap(\n        Map<String, dynamic>.from(item ?? {}),\n      )`;
+            } else {
+                switch (item.type) {
+                    case 'String':
+                        mapper = 'ParsingUtils.parseString(item)';
+                        break;
+                    case 'int':
+                        mapper = 'ParsingUtils.parseInt(item)';
+                        break;
+                    case 'double':
+                        mapper = 'ParsingUtils.parseDouble(item)';
+                        break;
+                    case 'bool':
+                        mapper = 'ParsingUtils.parseBool(item)';
+                        break;
+                    default:
+                        mapper = 'item';
+                }
+            }
+
+            const parsed = `ParsingUtils.parseMap(\n      ${value},\n      (item) => ${mapper},\n    )`;
+
+            if (prop.isNullable) {
+                return `${value} == null ? null : ${parsed}`;
+            }
+
+            return parsed;
+        };
+
         let method = `factory ${clazz.name}.fromMap(Map<String, dynamic> map) {\n`;
         method += `  return ${clazz.type}(\n`;
 
@@ -1492,6 +1744,8 @@ insertFromMap(clazz) {
 
             if (prop.isList || prop.isSet) {
                 method += listParser(prop, value);
+            } else if (prop.isModelMap || prop.isTypedValueMap) {
+                method += mapParser(prop, value);
             } else if (prop.isEnum || prop.isPrimitive || prop.isMap || isValueObjectType(prop.type)) {
                 method += primitiveParser(prop, value);
             } else if (prop.isNullable) {
@@ -1531,6 +1785,37 @@ insertFromMap(clazz) {
         }
     }
 
+    /**
+     * @param {ClassField} prop
+     */
+    function mapTypeMapping(prop, value) {
+        const item = prop.mapValueField;
+        let mapper;
+
+        if (prop.isModelMap) {
+            mapper = `${item.type}.fromMap(Map<String, dynamic>.from(item ?? {}))`;
+        } else {
+            switch (item.type) {
+                case 'String':
+                    mapper = 'ParsingUtils.parseString(item)';
+                    break;
+                case 'int':
+                    mapper = 'ParsingUtils.parseInt(item)';
+                    break;
+                case 'double':
+                    mapper = 'ParsingUtils.parseDouble(item)';
+                    break;
+                case 'bool':
+                    mapper = 'ParsingUtils.parseBool(item)';
+                    break;
+                default:
+                    mapper = 'item';
+            }
+        }
+
+        return `ParsingUtils.parseMap(${value}, (item) => ${mapper})`;
+    }
+
     let method = `factory ${clazz.name}.fromMap(Map<String, dynamic> map) {\n`;
     method += '  return ' + clazz.type + '(\n';
     for (let p of props) {
@@ -1545,6 +1830,9 @@ insertFromMap(clazz) {
 
         if (p.isEnum) {
             method += `${p.rawType}.values[ParsingUtils.parseInt(${value})]`;
+        } else if (p.isModelMap || p.isTypedValueMap) {
+            this.requiresImport('/core/utils/parsing/parsing.dart');
+            method += mapTypeMapping(p, value);
         } else if (p.isCollection) {
             method += `${p.type}.from(`;
             if (p.isPrimitive) {
@@ -2149,6 +2437,13 @@ class JsonReader {
         this.clazzName = toClassName(className);
         this.clazzes = [];
         this.files = [];
+        this.dictionaryPaths = new Set();
+
+        const marker = readSetting('json.dictionary_marker');
+        this.dictionaryMarker = typeof marker === 'string' && marker.length > 0 ? marker : '*';
+
+        const minKeys = readSetting('json.dictionary_min_keys');
+        this.dictionaryMinKeys = typeof minKeys === 'number' && minKeys > 0 ? minKeys : 3;
 
         this.error = this.checkJson();
     }
@@ -2192,10 +2487,198 @@ class JsonReader {
     }
 
     /**
+     * Walks the JSON and records every object that reads as a dictionary rather
+     * than as a class, identified by its path from the root.
+     *
      * @param {any} object
+     * @param {string} path
+     * @param {any[]} candidates
+     */
+    collectDictionaryCandidates(object, path, candidates) {
+        if (object == null || typeof object !== 'object') return;
+
+        if (Array.isArray(object)) {
+            if (object.length > 0) {
+                this.collectDictionaryCandidates(object[0], joinJsonPath(path, '*'), candidates);
+            }
+            return;
+        }
+
+        const shape = inspectDictionaryShape(object, this.dictionaryMinKeys);
+
+        if (shape != null) {
+            candidates.push(Object.assign({
+                path: path,
+                keys: Object.keys(object),
+                sample: firstValue(object),
+            }, shape));
+
+            // Nested dictionaries are looked for inside one sample value, which
+            // is how `getClazzes` walks a dictionary it was told to generate. If
+            // this candidate is rejected the nested paths stop lining up, so use
+            // the marker for dictionaries buried under a rejected one.
+            this.collectDictionaryCandidates(firstValue(object), joinJsonPath(path, '*'), candidates);
+            return;
+        }
+
+        for (const key of Object.keys(object)) {
+            const jsonKey = this.stripDictionaryMarker(key);
+            const childPath = joinJsonPath(path, jsonKey);
+            const value = object[key];
+
+            if (jsonKey !== key) {
+                // Marked by hand: nothing to ask, but keep walking its values.
+                this.collectDictionaryCandidates(firstValue(value), joinJsonPath(childPath, '*'), candidates);
+            } else {
+                this.collectDictionaryCandidates(value, childPath, candidates);
+            }
+        }
+    }
+
+    /**
+     * Removes the trailing marker that forces a key to be read as a dictionary,
+     * e.g. `social*` -> `social`.
+     *
      * @param {string} key
      */
-    getClazzes(object, key) {
+    stripDictionaryMarker(key) {
+        const marker = this.dictionaryMarker;
+
+        return key.length > marker.length && key.endsWith(marker)
+            ? key.substring(0, key.length - marker.length)
+            : key;
+    }
+
+    /**
+     * The property an object sits under, e.g. `variation` for the path
+     * `data.result.variation`.
+     *
+     * @param {string} path
+     */
+    dictionaryName(path) {
+        const segments = path.split('.').filter((segment) => segment.length > 0 && segment != '*');
+
+        return segments.length > 0 ? segments[segments.length - 1] : this.clazzName;
+    }
+
+    /**
+     * The type the picked object would generate, shown in the picker so the
+     * choice is visible before it is made.
+     *
+     * @param {any} candidate
+     */
+    dictionaryPreviewType(candidate) {
+        if (candidate.valueKind != 'object') {
+            return `Map<String, ${this.getPrimitive(candidate.sample) || 'dynamic'}>`;
+        }
+
+        const valueName = singularize(this.dictionaryName(candidate.path));
+
+        return `Map<String, ${createModelName(toClassName(valueName))}>`;
+    }
+
+    /**
+     * A few of the keys in question, which is what actually tells the user which
+     * object is being asked about.
+     *
+     * @param {any} candidate
+     */
+    dictionaryKeySamples(candidate) {
+        const samples = candidate.keys.slice(0, 3).map((key) => {
+            const short = key.length > 24 ? key.substring(0, 21) + '...' : key;
+            return `"${short}"`;
+        });
+
+        if (candidate.keys.length > samples.length) {
+            samples.push('...');
+        }
+
+        return samples.join(', ');
+    }
+
+    /**
+     * @param {any} json
+     */
+    async resolveDictionaryPaths(json) {
+        const mode = readSetting('json.dictionaries') || 'ask';
+        if (mode == 'off') return new Set();
+
+        const candidates = [];
+        this.collectDictionaryCandidates(json, '', candidates);
+        if (candidates.length == 0) return new Set();
+
+        candidates.sort((a, b) => DICTIONARY_TIERS.indexOf(a.tier) - DICTIONARY_TIERS.indexOf(b.tier));
+
+        const confident = new Set(
+            candidates.filter((candidate) => candidate.tier == 'confident').map((candidate) => candidate.path)
+        );
+
+        if (mode == 'auto') return confident;
+
+        const reasons = {
+            confident: 'these keys cannot be field names',
+            likely: 'every value has the same fields',
+            possible: 'could be either - tick if these keys differ per response',
+        };
+
+        const items = candidates.map((candidate) => ({
+            label: this.dictionaryName(candidate.path),
+            description: candidate.path.length == 0 ? 'the whole response' : `at ${candidate.path}`,
+            detail: `${this.dictionaryPreviewType(candidate)}  |  ${candidate.keyCount} keys: ${this.dictionaryKeySamples(candidate)}  |  ${reasons[candidate.tier]}`,
+            picked: candidate.tier == 'confident',
+            path: candidate.path,
+        }));
+
+        const picked = await vscode.window.showQuickPick(items, {
+            canPickMany: true,
+            ignoreFocusOut: true,
+            title: 'Which of these objects have data as their keys?',
+            placeHolder: `Ticked: read as Map<String, ...>. Unticked: one class per key. Tip: put "${this.dictionaryMarker}" after a key in the JSON to answer for it yourself.`,
+        });
+
+        // Dismissing the picker keeps the pre ticked detections, rather than
+        // silently generating one class per data key.
+        if (picked == null) return confident;
+
+        return new Set(picked.map((item) => item.path));
+    }
+
+    /**
+     * Builds the `Map<String, ...>` type for a dictionary shaped object and, when
+     * its values are objects, generates the class those values map to.
+     *
+     * @param {any} object
+     * @param {string} key
+     * @param {string} path
+     */
+    dictionaryType(object, key, path) {
+        const values = Object.keys(object || {}).map((name) => object[name]);
+        if (values.length == 0) return 'Map<String, dynamic>';
+
+        const primitive = this.getPrimitive(values[0]);
+
+        if (primitive != null) {
+            // Auto detected dictionaries are uniform already, but a hand marked
+            // one can hold anything, and then only dynamic is safe.
+            const uniform = values.every((value) => this.getPrimitive(value) == primitive);
+            return `Map<String, ${uniform ? primitive : 'dynamic'}>`;
+        }
+
+        const isObject = (/** @type {any} */ value) => value != null && !Array.isArray(value) && typeof value === 'object';
+        if (!values.every(isObject)) return 'Map<String, dynamic>';
+
+        const valueName = singularize(key);
+        this.getClazzes(values[0], valueName, joinJsonPath(path, '*'));
+
+        return `Map<String, ${createModelName(toClassName(valueName))}>`;
+    }
+
+    /**
+     * @param {any} object
+     * @param {string} key
+     * @param {string} path
+     */
+    getClazzes(object, key, path = '') {
         let clazz = new DartClass();
         clazz.startsAtLine = 1;
         clazz.name = createModelName(toClassName(key));
@@ -2211,7 +2694,11 @@ class JsonReader {
         let i = 1;
         clazz.classContent += 'class ' + clazz.name + ' {\n';
         for (let key in object) {
-            let k = !isArray ? key : createFileName(stripGeneratedSuffix(clazz.name));
+            const jsonKey = isArray ? key : this.stripDictionaryMarker(key);
+            const isMarked = jsonKey !== key;
+
+            let k = !isArray ? jsonKey : createFileName(stripGeneratedSuffix(clazz.name));
+            const propPath = isArray ? joinJsonPath(path, '*') : joinJsonPath(path, jsonKey);
 
             let value = object[key];
             let type = this.getPrimitive(value);
@@ -2219,13 +2706,11 @@ class JsonReader {
             if (type == null) {
                 if (value instanceof Array) {
                     if (value.length > 0) {
-                        let listType = k;
-                        if (k.endsWith('ies')) listType = removeEnd(k, 'ies') + 'y';
-                        if (k.endsWith('s')) listType = removeEnd(k, 's');
+                        const listType = singularize(k);
                         const i0 = this.getPrimitive(value[0]);
 
                         if (i0 == null) {
-                            this.getClazzes(value[0], listType);
+                            this.getClazzes(value[0], listType, joinJsonPath(propPath, '*'));
                             type = 'List<' + createModelName(toClassName(listType)) + '>';
                         } else {
                             type = 'List<' + i0 + '>';
@@ -2233,8 +2718,10 @@ class JsonReader {
                     } else {
                         type = 'List<dynamic>';
                     }
+                } else if (isMarked || this.dictionaryPaths.has(propPath)) {
+                    type = this.dictionaryType(value, k, propPath);
                 } else {
-                    this.getClazzes(value, k);
+                    this.getClazzes(value, k, propPath);
                     type = !isArray ? createModelName(toClassName(k)) : `List<${createModelName(toClassName(k))}>`;
                 }
             }
@@ -2269,6 +2756,7 @@ class JsonReader {
     async generateFiles() {
         try {
             const json = JSON.parse(this.json);
+            this.dictionaryPaths = await this.resolveDictionaryPaths(json);
             this.getClazzes(json, this.clazzName);
             this.removeDuplicates();
 
@@ -2301,8 +2789,10 @@ class JsonReader {
     addGeneratedFilesAsImport(generator) {
         const clazz = generator.clazzes[0];
         for (let prop of clazz.properties) {
-            if (this.getGeneratedTypeCount(prop.collectionType.rawType) == 1) {
-                const imp = `import '${createFileName(prop.collectionType.rawType)}.dart';`;
+            const item = prop.isModelMap ? prop.mapValueField : prop.collectionType;
+
+            if (this.getGeneratedTypeCount(item.type) == 1) {
+                const imp = `import '${createFileName(item.type)}.dart';`;
                 generator.imports.push(imp);
             }
         }

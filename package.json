@@ -3,7 +3,7 @@
 	"displayName": "Dart Data Class Generator Clean Architecture",
 	"description": "Create dart data classes easily, fast and without writing boilerplate or running code generation.",
 	"publisher": "nazmul-hasan",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"engines": {
 		"vscode": "^1.107.0"
 	},
@@ -112,6 +112,27 @@
 						],
 						"default": "ask",
 						"description": "Whether to separate a JSON into multiple files, when the JSON contains nested objects. ask: choose manually every time, separate: always separate into multiple files, current_file: always insert all classes into the current file."
+					},
+					"dart-data-class-generator.json.dictionaries": {
+						"type": "string",
+						"enum": [
+							"ask",
+							"auto",
+							"off"
+						],
+						"default": "ask",
+						"description": "How to handle JSON objects whose keys are data (ids, option names) instead of field names. ask: show the detected objects and let you tick the ones to read as Map<String, ...>, auto: take only the certain ones without asking, off: always generate a class per key."
+					},
+					"dart-data-class-generator.json.dictionary_marker": {
+						"type": "string",
+						"default": "*",
+						"description": "Suffix that forces a key to be read as a Map, e.g. \"variants*\". Marked keys are never asked about."
+					},
+					"dart-data-class-generator.json.dictionary_min_keys": {
+						"type": "number",
+						"default": 3,
+						"minimum": 2,
+						"description": "How many entries an object of same typed primitive values needs before it is offered as a Map. Raise this if small classes keep showing up in the picker."
 					},
 					"dart-data-class-generator.constructor.const": {
 						"type": "boolean",
